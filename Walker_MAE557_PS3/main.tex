@@ -1,0 +1,282 @@
+\documentclass{homework}
+\usepackage{amsmath, amssymb, amsfonts, stmaryrd}
+\usepackage{cancel}
+\setlength{\parindent}{0pt}
+\setlist[enumerate]{wide, labelwidth=!, labelindent= 0pt}
+
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{titlesec}
+
+\usepackage{lscape}
+
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\author{Michael D. Walker (mw6136)}
+\class{MAE557: Simulation and Modeling of Fluid Flows}
+\date{December 21, 2025}
+\title{Mini-Project 3 Report}
+
+% Custom section formatting to include letters
+\titleformat{\section}
+  {\normalfont\normalsize\bfseries}{\thesection.}{1em}{}
+\renewcommand{\thesection}{\Alph{section}}
+
+\begin{document}
+
+\maketitle
+
+Disclaimer: I collaborated with Philip Satterthwaite and Michael Schroeder. I received assistance from Trevor Fush and Israel Bonilla. I used Google AI Studio (Gemini 2.5 Pro) for debugging. Contrary to the instructions from the project workshop, I did \emph{not} have fun.
+
+\section*{Abstract}
+This report presents the design, implementation, and validation of a numerical solver for two-dimensional, unsteady, incompressible viscous flow. The solver is developed to simulate the flow within a square, lid-driven cavity with a time-varying sinusoidal lid velocity. The numerical approach is based on the finite-volume implementation of the Navier-Stokes equations on a collocated grid. An explicit pressure-correction scheme is employed to enforce the incompressibility constraint, with an explicit Euler scheme for time advancement and second-order central differencing for spatial discretization. The solver's implementation is verified through grid and timestep convergence studies, demonstrating the expected first-order temporal and second-order spatial accuracy. The results are compared with solutions from a compressible flow solver across a range of Mach numbers (0.025 to 0.8). The comparison confirms the accuracy of the incompressible solver at low Mach numbers (Ma < 0.1) and demonstrates its superior computational efficiency for low-speed flows by avoiding the stringent acoustic CFL timestep limitation inherent in compressible solvers.
+
+\section*{Introduction}
+
+This project concerns the simulation of a incompressible, viscous fluid within a two-dimensional square cavity $L=1$ [m]. The flow is driven by the top wall, which moves tangentially with a time-dependent sinusoidal velocity profile $u_\textrm{wall}(t) = |u_\textrm{wall,0}| \sin (\omega t)$, while the other three walls remain stationary. Zero-slip/zero-penetration boundary conditions are established on the four walls and lid. This configuration, a variation of the classic lid-driven cavity problem, serves as a test case for numerical methods in fluid dynamics, incorporating unsteadiness, viscous effects, and compressibility.
+\\ \\
+The gas is calorically perfect air $\gamma=1.4$ with constant specific heats. The initial pressure and temperature are uniformly $P=1$ [bar] and $T=300$ [K], respectively, with a specific gas constant of $R=287$ [J/kg-K], so $c_P = \gamma R / (\gamma -1)$. This initial temperature is used to define the reference speed of sound $a_0$. The walls are isothermal (Dirichlet boundary condition $T_\mathrm{wall} = 300$). The properties are defined non-dimensionally by the Reynolds number $\mathrm{Re} = |u_\mathrm{wall,0}| L / \nu = 100$, Mach number $\mathrm{Ma} = |u_\mathrm{wall,0}| / a_0 = 0.025$, Prandlt number $\mathrm{Pr} = \rho \, c_P \, \nu / \lambda = 0.7$, and lid oscillating frequency $L \sqrt{\omega / 2 \nu} = 1$.
+
+\section*{Numerical Method}
+
+\section{Pressure-Correction Algorithm}
+For the solution of the incompressible Navier-Stokes equations, a pressure-correction method was employed. \textbf{Two methods were implemented.} First, a one-step explicit scheme was implemented for testing. Then, a more complex fractional-step (or projection, or ``predictor-corrector'') method, similar to that originally proposed by Chorin \cite{Chorin1967,Chorin1968}, was chosen, using the explicit Euler scheme for the time-advancement step. This approach is motivated by the challenge of simultaneously satisfying the momentum equations and the divergence-free velocity constraint ($\partial u_i / \partial x_i = 0$). The projection method decouples the velocity and pressure updates. In each timestep, the following sequence is executed:
+\begin{enumerate}
+    \item Predict: A provisional velocity field $u_i^\bigstar$ is calculated by solving the momentum equations without the pressure gradient term. This step advances the solution in time considering only the effects of convection and diffusion.
+    \item Correct: This intermediate velocity field does not, in general, satisfy the incompressibility constraint. Therefore, it is ``projected'' onto a divergence-free space. This is accomplished by solving a Poisson equation for the pressure, which enforces the continuity equation.
+    \item Update: The velocity field is then corrected using the calculated pressure gradient, resulting in a final velocity field for the timestep that is both dynamically correct and mass-conserving.  Use the velocity and forces from the current timestep $n$ to explicitly calculate the provisional velocity at the next timestep $n+1$.
+\end{enumerate}
+
+An explicit formulation of this method was selected primarily for its simplicity of implementation. Unlike implicit methods that require solving a large, coupled system of equations for velocity and pressure, the explicit approach solves for these variables sequentially, which is more straightforward to code and debug. The trade-off for this simplicity is a more restrictive stability constraint on the timestep size.
+
+\section{Finite Volume Operators and Governing Equations}
+
+The solver is based on the finite volume method applied to the semi-discretized form of the governing equations. Beginning with the integral form of the incompressible Navier-Stokes equations over a control volume $V$:
+\begin{equation}
+    \frac{\partial}{\partial t} \int_V u_i \,dV + \oint_S u_i u_j \hat{n}_j \, dS = -\frac{1}{\rho} \oint_S p \, \hat{n}_i \,dS + \frac{1}{\rho} \oint_S \tau_{ij} \, \hat{n}_j \,dS \; .
+\end{equation}
+The continuity equation is given by:
+\begin{equation}
+    \oint_S u_i \, \hat{n}_j \,dS = 0 \; .
+\end{equation}
+In incompressible flow, assuming  a Newtonian fluid, imposing that viscosity as a rank-2 tensor is isotropic, and invoking Stokes' hypothesis (zero bulk viscosity), the viscous stress reduces to:
+\begin{equation}
+    \tau_{ij} = \mu \left({\frac{\partial u_{i}}{\partial x_{j}}}+{\frac{\partial u_{j}}{\partial x_{i}}}\right) - \cancel{\frac{2}{3} \mu \left(\frac{\partial u_k}{\partial x_k} \right) \delta_{ij}} \; .
+\end{equation}
+The complete 2-D viscous stress tensor can be written in matrix form as:
+\begin{equation*}
+\tau =
+\begin{bmatrix}
+\tau_{xx} & \tau_{xy} \\
+\tau_{yx} & \tau_{yy}
+\end{bmatrix}
+=
+\begin{bmatrix}
+2 \mu \frac{\partial u}{\partial x} & \mu \left( \frac{\partial u}{\partial y} + \frac{\partial v}{\partial x} \right) \\
+\mu \left( \frac{\partial v}{\partial x} + \frac{\partial u}{\partial y} \right) & 2 \mu \frac{\partial v}{\partial y}
+\end{bmatrix} \; .
+\end{equation*}
+Here, $\rho$ is fluid density, $\mu$ is the dynamic viscosity, $u$ and $v$ are velocity components. A collocated grid arrangement was used, where all flow variables ($u, v, p$) are stored at the cell centers and the computational domain was divided into a grid of uniform cells. The divergence theorem $ \oint_S (\mathbf{\Phi} \cdot \mathbf{n} )\, d S = \int_V \left(\mathbf{\nabla } \cdot \mathbf{\Phi} \right)\, d V, $ is used to convert the surface integrals (fluxes) of the convective and diffusive terms into volume integrals:
+\begin{equation}
+    \frac{\partial}{\partial t} \int_V u_i \,dV + \int_V \frac{\partial (u_i u_j)}{\partial x_j} \, d V = -\frac{1}{\rho} \int_V \frac{\partial p}{\partial x_i} \,dV + \frac{\mu}{\rho} \int_V  \frac{\partial^2 u_i}{\partial x_j \partial x_j} \, d V \; ,
+\end{equation}
+which are then discretized. For the spatial discretization of fluxes at the cell faces, central difference operators were chosen. This scheme approximates the value at a cell face by linear interpolation of the values from the centers of the two adjacent cells. This approach was selected for its second-order spatial accuracy and ease of implementation on the collocated grid structure. While collocated grids can sometimes lead to pressure-velocity decoupling, a simple central differencing scheme was deemed sufficient for this project. It should be noted that on a uniform structured grid, this cell-centered finite-volume method is mathematically similar to a second-order centered finite-difference scheme.
+\\
+\paragraph{\textbf{Single-step Method: }}
+The first implemented scheme advances the momentum equation in time using the following explicit formulation:
+\begin{equation}
+    u_i^{n+1} - u_i^n = \Delta t \left( \mathrm{H}_i^n - \frac{\delta p^{n} / \rho}{\delta x_i} \right) \; ,
+    \label{eqn:single_explicit}
+\end{equation}
+where $u_i$ is the velocity component in the $i$-direction, $n$ is the timestep index, and $\mathrm{H}_i^n$ represents the spatial discretization of the convective and viscous terms from the previous timestep:
+\begin{equation}
+    \mathrm{H}_i^n = - \frac{\delta (u_i u_j)^n}{\delta x_j} + \frac{\delta \tau_{ij}^n / \rho}{\delta x_j} \; .
+    \label{eqn:H}
+\end{equation}
+To enforce the incompressibility constraint, $ \partial u_i^{n} / \partial x_i = 0$, the divergence of Equation~\ref{eqn:single_explicit} is taken:
+$$\frac{\delta u_i^{n+1}}{ \delta x_j} = \Delta t \frac{\delta \mathrm{H}_i^n}{\delta x_i} - \Delta t \frac{\delta}{\delta x_i} \left( \frac{\delta p^{n} / \rho}{\delta x_i} \right) = 0 \; .$$
+This results in a Poisson equation for the pressure at the timestep, $p^{n}$:
+\begin{equation}
+    \frac{\delta}{\delta x_i} \left( \frac{\delta p^{n} / \rho}{\delta x_i} \right) = \frac{\delta \mathrm{H}_i^n}{\delta x_i} \; .
+\end{equation}
+To implement the finite volume method, this pressure equation is integrated over a control volume $V$. Applying the divergence theorem converts the volume integral of the Laplacian into a surface integral of the pressure gradient flux:
+\begin{equation}
+    \oint_S \frac{\delta p^{n} / \rho}{\delta x_i} \hat{n}_i \,dS = \int_V \frac{\delta \mathrm{H}_i^n}{\delta x_i} \,dV \; .
+    \label{eqn:Poisson}
+\end{equation}
+On a 2-D Cartesian grid, this discretizes to a five-point stencil for the pressure at each cell $(i,j)$, which can be solved iteratively to enforce continuity across each of the cells. The discretized form for a cell is:
+\begin{equation}
+    \frac{\delta p}{\delta x}\Big|_{i+1/2} - \frac{\delta p}{\delta x}\Big|_{i-1/2} + \frac{\delta p}{\delta y}\Big|_{j+1/2} - \frac{\delta p}{\delta y}\Big|_{j-1/2} = \rho \left( \mathrm{H}_x|_{i+1/2} - \mathrm{H}_x|_{i-1/2} + \mathrm{H}_y|_{j+1/2} - \mathrm{H}_y|_{j-1/2} \right) \; .
+\end{equation}
+Once the pressure field $p^{n}$ is found, the velocity components at the new timestep are updated. The same technique can be applied to the governing equations by taking the volume integral of the entire equation and converting the flux terms to surface integrals:
+\begin{align*}
+    \int_V \left( \frac{u_i^{n+1} - u_i^n}{\Delta t} \right) \, dV &= 
+    - \int_V \left( \mathrm{H}_i^n - \frac{\delta p^{n} / \rho}{\delta x_i} \right) \, dV \\
+    \int_V \left( \frac{u_i^{n+1} - u_i^n}{\Delta t} \right) \, dV &= 
+    - \int_V \frac{\delta (u_i u_j)}{\delta x_j} \, dV 
+    - \int_V \frac{\delta p^{n} / \rho}{\delta x_i} \, dV 
+    + \int_V \frac{1}{\rho} \frac{\delta \tau_{ij}}{\delta x_j} \, dV \\
+    \int_V \left( \frac{u_i^{n+1} - u_i^n}{\Delta t} \right) \, dV &= 
+    - \oint_S u_i u_j \hat{n}_j \, dS 
+    - \int_V \frac{\delta p^{n} / \rho}{\delta x_i} \, dV 
+    + \oint_S \frac{\tau_{ij}}{\rho} \hat{n}_j \, dS
+\end{align*}
+For the $u$ and $v$ velocities, the update equations are:
+\begin{align}
+\begin{split}
+    u_{ij}^{n+1} &= u_{ij}^n +\Delta t \, \mathrm{H}_x|_{ij} -  \frac{\Delta t}{\rho} \left( \frac{\delta p^{n}}{\delta x} \right)_{ij} \\
+    v_{ij}^{n+1} &= v_{ij}^n +\Delta t \, \mathrm{H}_y|_{ij} - \frac{\Delta t}{\rho} \left( \frac{\delta p^{n}}{\delta y} \right)_{ij}
+    \label{eqn:uv_single}
+\end{split}
+\end{align}
+\\
+\paragraph{\textbf{Fractional-step Method: }}
+Now implementing a fractional-step method, an intermediate velocity, $ u_i^\bigstar$ is first computed explicitly using the momentum equation by ignoring the pressure gradient term:
+\begin{equation}
+     \frac{u_i^\bigstar - u_i^{n}}{\Delta t} = \mathrm{H_i} (u_i^n) \; ,
+\end{equation}
+where $ u_i^{n}$ is the velocity at $n$-th timestep. In the second half of the algorithm, the projection step, the intermediate velocity is corrected to obtain the final solution of the timestep $ u_i^{n+1} $. Writing this equation in the form of a timestep makes clear that the algorithm is really just an operator splitting approach in which one considers the viscous forces (in the first half-step) and the pressure forces (in the second half-step) separately. Now solving the momentum equation with only pressure:
+\begin{equation}
+    \frac{u_i^{n+1} - u_i^\bigstar}{\Delta t} = \frac{\delta p^{n+1} / \rho}{\delta x_i} \quad \rightarrowtriangle \quad \frac{\delta}{\delta x_i} \left( \frac{\delta p^{n+1} / \rho}{\delta x_i} \right) = \frac{1}{\Delta t} \frac{\delta u_i^\bigstar}{\delta x_i} \; .
+    \label{eqn:Poisson_fractional}
+\end{equation}
+Computing the right-hand side of the second half-step requires knowledge of the pressure $p$ at the $n+1$ time level. This is obtained by taking the divergence and requiring that $ \partial u_i^{n+1} / \partial x_i = 0$, which is the divergence (continuity) condition, thereby deriving the following Poisson equation for $  p^{n+1} $. The update equations for the $u$ and $v$ velocities are:
+\begin{align}
+\begin{split}
+    u_{ij}^{n+1} &= u_{ij}^\bigstar - \frac{\Delta t}{\rho} \left( \frac{\delta p^{n+1}}{\delta x} \right)_{ij} \\
+    v_{ij}^{n+1} &= v_{ij}^\bigstar - \frac{\Delta t}{\rho} \left( \frac{\delta p^{n+1}}{\delta y} \right)_{ij}
+    \label{eqn:uv_fractional}
+\end{split}
+\end{align}
+It is instructive to note that the equation written as $ u_i^\bigstar=u_i^{n+1}+{\frac{\Delta t}{\rho }}\,\nabla p^{n+1} $ is the standard decomposition if boundary conditions for $p$ on the domain boundary are $ \nabla p^{n+1}\cdot \mathbf{n} = 0 $. In practice, this condition is responsible for the errors these methods show close to the boundary of the domain since the real pressure (i.e., the pressure in the exact solution of the Navier-Stokes equations) does not satisfy such boundary conditions. The velocity field is forced to satisfy a discrete continuity constraint at the end of each timestep.
+
+\section{Temporal Schemes and Solution Methods}
+For the temporal discretization, the explicit Euler (or Forward Euler) scheme was used. This method approximates the time derivative as a forward difference, advancing the solution from time $t^n$ to $t^{n+1} = t^n + \Delta t$. In the context of the pressure-correction method, this scheme is applied to compute the provisional velocity field $u_i^n$ or $u_i^\bigstar$, using the discretized convective and viscous terms, $\mathrm{H}_i(u_i^n)$.
+\\ \\
+The Forward Euler scheme is the simplest explicit method for advancing the solution in time. While higher-order explicit methods (like Runge-Kutta) or implicit methods could offer better accuracy or stability, the Forward Euler method provides the most straightforward implementation, which is advantageous for initial solver development and verification. While implicit methods allow for larger time steps, they require solving a system of equations at each step, which is more complex to code. The explicit approach has a lower computational cost per timestep but is only first-order accurate and subject to stringent stability constraints (limited conditional stability), which is addressed in the next section.
+\\ \\
+The pressure-correction step requires the solution of a pressure Poisson equation, which, after discretization, forms a large, sparse system of linear algebraic equations of the form $\mathbf{A}\mathbf{p} = \mathbf{b}$. The Gauss-Seidel method was chosen as the iterative solver for this system. The iteration continues until the change in the solution between successive iterations falls below a specified tolerance.
+
+\section{Expected CFL Limits}
+Explicit time-marching schemes are conditionally stable, with the maximum allowable timestep, $\Delta t$, being limited by the Courant-Friedrichs-Lewy (CFL) condition. The 2-D incompressible Navier-Stokes equations are in the theoretical zero-Mach-number (infinite speed of sound) limit, and the timestep is constrained by both convective and viscous phenomena.
+\begin{enumerate}
+    \item \textbf{Convective Constraint:} The CFL condition requires that the timestep $\Delta t$ be small enough that a fluid particle does not travel more than one grid cell width (for a uniform grid $\Delta x = \Delta y$) in a single step:
+    \begin{equation}
+        \Delta t_c \le \frac{\Delta x}{|u_i|_{\textrm{max}}} = \frac{\Delta x}{|u_\textrm{wall,0}|} \; ,
+    \end{equation}
+    since the maximum velocity is the boundary condition imposed at the lid.
+    \\
+    \item \textbf{Diffusive Constraint:} The viscous diffusion term also imposes a stability constraint, which is particularly important for low-velocity, high-viscosity flows or fine grids:
+    \begin{equation}
+        \Delta t_d \le \frac{[\Delta x]^2}{2 \nu} \; ,
+    \end{equation}
+    where $\nu$ is the kinematic viscosity.
+\end{enumerate}
+Given the parameters, $L=1$ m and $\textrm{Re} = |u_\textrm{wall,0}| L / \nu = 100$, the kinematic viscosity is $\nu = |u_\textrm{wall,0}| / 100$. The diffusive limit can be expressed as:
+\begin{equation}
+    \Delta t_d \le \frac{[\Delta x]^2}{2(|u_\textrm{wall,0}|/100)} = \frac{50 [\Delta x]^2}{|u_\textrm{wall,0}|} \; .
+\end{equation}
+The overall timestep must satisfy $\Delta t \le \min(\Delta t_c, \Delta t_d)$. The diffusive limit becomes more restrictive than the convective limit when $\Delta t_d < \Delta t_c$, which occurs when $50 [\Delta x]^2 / |u_\textrm{wall,0}| < \Delta x / |u_\textrm{wall,0}|$, or $\Delta x < 1/50 = 0.02$ m. Since the grid resolutions used approach this scale, the diffusive limit is a critical factor for stability, not just the convective CFL condition. 
+\\ \\
+For a Forward Euler scheme with second-order central differencing, the theoretical CFL limit is typically on the order of 1 for purely hyperbolic problems. However, the presence of viscous terms adds a more restrictive diffusion limit. Empirical testing for this specific incompressible flow problem revealed that at a CFL number greater than 0.4, the solution was no longer stable at large $\omega t$. The most stable results were obtained with a CFL number of approximately 0.1, which allowed for a run time up to $\omega t = 10$. This value is lower than the theoretical ideal but is not uncommon for explicit schemes applied to complex flows where multiple stability constraints interact and consistent with the violation of this more restrictive diffusive stability criterion.
+\\ \\
+In addition, the value of the tolerance on the pressure solver also affected the stability of the solution. Setting the tolerance too high resulted in non-trivial normal pressure gradients occurring at the walls. This in turn caused the velocity in the corners to increase exponentially and invalidating the solution. By setting the tolerance to lower, the pressure solver could converge so the velocity had no divergence.
+
+
+\section{Algorithm Pseudo-code}
+The implemented algorithms for advancing the solution by one timestep using the single-step and fractional-stem methods are summarized in Algorithm~\ref{alg:solver_single} and \ref{alg:solver_fractional}, respectively.
+\begin{algorithm}[h!]
+\caption{Single-step Explicit Algorithm for one timestep}
+\label{alg:solver_single}
+\begin{algorithmic}[1]
+\State Given $u_i^n$ at time $t^n$.
+\State Apply boundary conditions to $u_i^n$ (no-slip on stationary walls, $u_\textrm{wall} = |u_\textrm{wall,0}|(t^n)$ on the top wall).
+\State Compute convective and viscous terms, $\mathrm{H}_i(u_i^n)$ from Equation~\ref{eqn:H}.
+\State Solve the pressure Poisson equation derived from the divergence of the momentum equation for $p^n$:
+\begin{align*}
+    \frac{\delta}{\delta x_i} \left( \frac{1}{\rho} \frac{\delta p^{n}}{\delta x_i} \right) = \frac{\delta \mathrm{H}_i(u_i^n)}{\delta x_i} &&&&&&&&&&&&&&&&
+\end{align*}
+\State This is solved iteratively using the Gauss-Seidel method to enforce continuity ($\partial u_i / \partial x_i = 0$) across the control volumes.
+\State Advance the velocity field $(u,v)$ to the next timestep using the explicit update from Equation~\ref{eqn:uv_single}:
+\begin{align*}
+    \frac{u_i^{n+1} - u_i^n}{\Delta t} = \mathrm{H}_i(u_i^n) - \frac{1}{\rho} \frac{ \delta p^{n}}{\delta x_i} &&&&&&&&&&&&&&&&
+\end{align*}
+\State Advance time: $t^{n+1} = t^n + \Delta t$.
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[h!]
+\caption{Fractional-step Pressure-Correction Algorithm for one timestep}
+\label{alg:solver_fractional}
+\begin{algorithmic}[1]
+\State Given $u_i^n$, $p^n$ at time $t^n$.
+\State Apply boundary conditions to $u_i^n$ (no-slip on stationary walls, $u_\textrm{wall} = |u_\textrm{wall,0}|(t^n)$ on the top wall, zero-pressure-gradient).
+\State Compute convective and viscous terms, $\mathrm{H}_i(u_i^n)$ from Equation~\ref{eqn:H}.
+\State Calculate a provisional velocity field $u_i^\bigstar$ without the pressure gradient:
+\begin{align*}
+    \frac{u_i^\bigstar- u_i^n}{\Delta t} = \mathrm{H}_i(u_i^n)&&&&&&&&&&&&&&&&
+\end{align*}
+\State Solve the pressure Poisson equation in Equation~\ref{eqn:Poisson_fractional} for the pressure at the new timestep, $p^{n+1}$:
+\begin{align*}
+    &\frac{\delta^2 p^{n+1}}{\delta x_i \delta x_i} = \frac{\rho}{\Delta t} \frac{\delta u_i^\bigstar}{\delta x_i}&&&&&&&&&&&&&&&&
+\end{align*}
+\State This is solved iteratively using the Gauss-Seidel method with zero-normal-gradient boundary conditions for pressure $ \nabla p^{n+1}\cdot \mathbf{n} = 0 $ at the wall.
+\State Correct the velocity $(u,v)$ field to enforce the divergence-free constraint from Equation~\ref{eqn:uv_fractional}:
+\begin{align*}
+    \frac{u_i^{n+1} - u_i^\bigstar}{\Delta t} = -\frac{1}{\rho} \frac{\delta p^{n+1}}{\delta x_i}&&&&&&&&&&&&&&&&
+\end{align*}
+\State Advance time: $t^{n+1} = t^n + \Delta t$.
+\end{algorithmic}
+\end{algorithm}
+
+\section*{Results and Discussion}
+
+\section{Implementation and Convergence}
+
+The numerical scheme is expected to exhibit second-order convergence in space due to the use of central differencing and first-order convergence in time from the explicit Euler scheme. To verify this, convergence studies were performed. A reference solution was generated on a highly refined grid, and the $L_2$ norm of the error was computed for a series of coarser grids and larger time steps.
+\\
+\paragraph{\textbf{Spatial Convergence: }}
+The spatial accuracy was assessed by running the simulation on a series of progressively refined grids while keeping the timestep sufficiently small to ensure that spatial errors dominated. Figure~\ref{fig:spatial_temp_conv} shows a log-log plot $L_2$ norm of error versus grid spacing, $\Delta x$. The norm was calculated using a reference value $u^\star$ from the highest resolution case. The measured slope of the error curve is approximately 2. Any small deviation from the theoretical second order could be attributed to several factors, including the implementation of boundary conditions, which can locally reduce accuracy, or the fact that the grids used were not sufficiently fine to be in the asymptotic regime where second-order convergence becomes dominant.
+\\
+\paragraph{\textbf{Temporal Convergence: }}
+A similar analysis was performed to assess temporal convergence. The grid was held fixed at a high resolution, and the timestep $\Delta t$ was systematically reduced. Figure~\ref{fig:spatial_temp_conv} shows a log-log plot of the error versus the timestep. The slope of the line is near 1.0, which is consistent with the theoretical first-order accuracy of the Forward Euler scheme. The results show slight non-monotonic behavior, where the error does not decrease exponentially as the timestep is refined. Such behavior can occur when the total solution error is dominated by the spatial discretization error, or if the simulation has not been run for a sufficient duration to wash out initial transients and reach a periodic steady state from which temporal convergence can be accurately measured.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width= 0.45\textwidth]{spatial_convergence.png}
+    \includegraphics[width= 0.45\textwidth]{temporal_convergence.png}
+    \caption{(left) Spatial convergence of the incompressible flow solver. The slope of approximately 2.0 confirms the expected second-order accuracy. (right) Temporal convergence of the flow solver. The slope of approximately 1.0 confirms the expected first-order accuracy of the Forward Euler scheme.}
+    \label{fig:spatial_temp_conv}
+\end{figure}
+
+\section{Comparison with Compressible Flow Solver}
+The incompressible Navier-Stokes equations are the theoretical zero-Mach-number limit of the compressible Navier-Stokes equations. Therefore, a key validation of the incompressible solver is to compare its solution to that of a compressible solver at low Mach numbers. Figure \ref{fig:mach_comp} shows the normalized velocity magnitude $|\mathbf{u}|/|\mathbf{u}|_\mathrm{max}$ at $\omega t = 10$ ($|\mathbf{u}|=\sqrt{u^2+v^2}$) using the incompressible solver ($N_x, N_y = 128$) at a low Mach number, and using the compressible solver ($N_x, N_y = 64$) for varying Mach numbers. The Reynolds number (i.e., $\mathrm{Re} = |u_\mathrm{wall,0}| L / \nu = 100$) and non-dimensional frequency (i.e., $L \sqrt{\omega / 2 \nu} = 1$) were held constant by increasing the wall velocity magnitude $|u_\mathrm{wall,0}|$ and frequency of the oscillation $\omega$, and decreasing the domain size $L$ accordingly. The flow structure is stable and qualitatively similar, characterized by a primary vortex driven by the lid. Slight differences can be observed in the velocity field between the low-Mach incompressible solution and the $\textrm{Ma} = 0.025$ compressible solution. In particular, the velocity excursion along the main diagonal of the cavity is smaller in the incompressible case.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=1.02\textwidth]{Norm_Vel_Comp.png}
+    \caption{ Normalized velocity magnitude $|\mathbf{u}|/|\mathbf{u}|_\mathrm{max}$ at $\omega t = 10$ ($|\mathbf{u}|=\sqrt{u^2+v^2}$) using the incompressible solver ($N_x, N_y = 128$) at a low Mach number, and using the compressible solver ($N_x, N_y = 64$) for varying Mach numbers. The flow structure is stable and qualitatively similar, with velocity magnitudes scaling with Mach number. Note that the domain size was varied to maintain constant Reynolds number and non-dimensional frequency.}
+    \label{fig:mach_comp}
+\end{figure}
+
+Figure \ref{fig:incompressible_sol} shows the velocity magnitude $|\mathbf{u}|=\sqrt{u^2+v^2}$ over the oscillatory period $\omega t = 0$ - $1.0$ using the incompressible solver at a low Mach number, and using the compressible solver for Mach numbers ranging from 0.025 to 0.8. As expected, the compressible solution at the lowest Mach number ($\textrm{Ma} = 0.025$) shows a strong qualitative similarity to the incompressible solution. The velocity magnitudes scale proportionally with Mach number, as seen in the respective colorbars. As the Mach number increases, significant differences emerge. At $\textrm{Ma} = 0.5$ and $\textrm{Ma} = 0.8$, compressibility effects become dominant, altering the structure of the primary vortex and the overall flow field. Noticeable differences begin to appear around $\textrm{Ma} = 0.1$, and become substantial for $\textrm{Ma} > 0.3$, which is a commonly cited threshold for the breakdown of the incompressible assumption.
+\\ \\
+A critical difference between the two solvers is computational efficiency. For low Mach number flows, the incompressible solver is vastly more efficient. The timestep in an explicit compressible solver is severely restricted by the CFL condition based on the speed of sound. In low-speed flows, the speed of sound is much greater than the fluid velocity, leading to a prohibitively small timestep. The incompressible solver circumvents this ``stiffness'' by assuming an infinite speed of sound, allowing for a much larger timestep limited only by the fluid velocity and viscous diffusion rates. This allowed for a higher resolution solution  ($N_x, N_y = 128$) to be computed using the incompressible solver, in comparable time for a lower resolution ($N_x, N_y = 64$) with the compressible solver. For the compressible solver, the stability of the scheme is limited by the speed of sound, $a_0$, which is much larger than the fluid velocity at low Mach numbers. Consequently, the timestep $\Delta t$ must be very small, and many iterations are needed to reach a given physical time. As the Mach number increases, the fluid velocity becomes a more significant fraction of the sound speed. This allows for a larger $\Delta t$ relative to the characteristic time scale of the flow's evolution, enabling the simulation to proceed more efficiently.
+
+\section*{Conclusion}
+An incompressible flow solver was successfully developed using a finite volume method with a pressure-correction scheme. The solver was built upon an explicit Euler time-stepping scheme and central differencing in space. The theoretical stability limits were analyzed, highlighting the importance of the diffusive constraint for fine grids. The convergence studies matched the theoretical orders of accuracy in space and time, providing valuable insight into the solver's behavior. Comparison with a compressible solver validated the physical accuracy of the incompressible model at low Mach numbers (Ma < 0.1) and demonstrated its significant computational advantage for such flows.
+
+\bibliographystyle{plain}
+\bibliography{references.bib}
+
+\begin{landscape}
+\begin{figure}
+    \centering
+    \includegraphics[width=1.35\textwidth]{Vel_Mag_Comp.png}
+    \caption{Velocity magnitude $|\mathbf{u}|=\sqrt{u^2+v^2}$ field over the oscillatory period $\omega t = 0$ - $1.0$ using the incompressible solver at a low Mach number, and using the compressible solver for varying Mach numbers. The flow structure is stable and qualitatively similar, with velocity magnitudes scales proportionally with Mach number. Note that the domain size was varied to maintain constant Reynolds number and non-dimensional frequency.}
+    \label{fig:incompressible_sol}
+\end{figure}
+\end{landscape}
+
+\end{document}
